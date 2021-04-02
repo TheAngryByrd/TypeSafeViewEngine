@@ -146,11 +146,14 @@ module Tests =
     let debugHost (webhost : IWebHost) =
         webhost.ServerFeatures.Get<IServerAddressesFeature>().Addresses |> Seq.iter(printfn "%s")
 
+    let submitId = "submit"
+    let submitIdPath = $"#{submitId}"
     let browseTo (webhost : IWebHost) (browser : IWebDriver) =
         let url =
             webhost.ServerFeatures.Get<IServerAddressesFeature>().Addresses
             |> Seq.head
         functions.url url browser
+        functions.waitForElement submitIdPath browser
 
 
     let page bodyForm =
@@ -160,7 +163,7 @@ module Tests =
             body [] [
                 form [_id "form"; _method "POST"; ] [
                     bodyForm
-                    input [_id "submit" ;_type "submit"; _value "Submit"; ]
+                    input [_id submitId ;_type "submit"; _value "Submit"; ]
                 ]
                 // script [_type "application/javascript"; _src "https://cdn.jsdelivr.net/gh/serbanghita/formToObject.js/dist/formToObject.min.js"] []
 
@@ -170,7 +173,7 @@ module Tests =
             ]
         ]
 
-    let bindIt (binder : HttpContext -> Task<_>) (event : Event<_>) next (ctx : HttpContext) = task {
+    let bindAndPublish (binder : HttpContext -> Task<_>) (event : Event<_>) next (ctx : HttpContext) = task {
         try
             let! bindedValue = binder ctx
             //Started in background since event.Trigger seems to hang in conjuction with Async.AwaitEvent
@@ -181,126 +184,63 @@ module Tests =
     }
 
 
+    let roundTripTestImpl (viewModel : 'a) additionalAsserts = async {
+        let form = editFor viewModel "myForm" defaultRenderConfig
+        let page = page form
+        let event = Event<_>()
+        // Start awaiting for this event to get published otherwise we may miss it
+        let! postedData = event.Publish |> Async.AwaitEvent |> Async.StartChild
+        let binder (ctx : HttpContext) = ctx.BindJsonAsync<_>()
+
+        let webApp = choose [
+            route "/" >=> GET >=> htmlView page
+            route "/" >=> POST >=> bindAndPublish binder event
+        ]
+
+        let configureServices ctx (services : IServiceCollection) =
+            let settings = JsonSerializerSettings(MissingMemberHandling = MissingMemberHandling.Ignore)
+            settings.Converters.Add(Json.Converters.CheckboxConverter())
+            services.AddSingleton<Json.ISerializer>(NewtonsoftJson.Serializer(settings)) |> ignore
+            ()
+
+        use! webhost = Server.createGiraffeServer configureServices webApp
+        use browser = functions.start canopy.types.ChromeHeadless
+        browseTo webhost browser
+        functions.click submitIdPath browser
+        let! actual = postedData
+
+        Expect.equal actual viewModel ""
+
+        do! additionalAsserts browser event
+    }
+
+
+    let roundTripTestCase name (viewModel : 'a) additionalAsserts =
+        testCaseAsync name <| roundTripTestImpl viewModel additionalAsserts
+    let froundTripTestCase name (viewModel : 'a) additionalAsserts =
+        ftestCaseAsync name <| roundTripTestImpl viewModel additionalAsserts
+    let proundTripTestCase name (viewModel : 'a) additionalAsserts =
+        ptestCaseAsync name <| roundTripTestImpl viewModel additionalAsserts
+
+    let noMoreAsserts _ _ = async.Zero ()
+
+    let boolAsserts (browser : IWebDriver) (event : Event<FormStateBool>)  =  async {
+        let! postedData = event.Publish |> Async.AwaitEvent |> Async.StartChild
+        functions.click "[name='Enabled']" browser
+        functions.click submitIdPath browser
+        let expected = {Enabled = false}
+        let! actual = postedData
+        Expect.equal actual expected ""
+
+    }
 
     [<Tests>]
     let roundTripTests =
+        // testSequenced <|
         testList "Round Trip" [
-            // testCase "hello" <| fun () ->
-            //     use browser = functions.start canopy.types.Chrome
-            //     functions.url "https://www.olivercoding.com/" browser
-            //     functions.highlight "#mainLogoDiv" browser
-            //     functions.sleep 5
-            //     Expect.isTrue true ""
-            testCaseAsync "bool" <| async {
-                let myVM =  {Enabled = true}
-                let form = editFor myVM "myForm" defaultRenderConfig
-                let page = page form
-                let event = Event<FormStateBool>()
-                let binder (ctx : HttpContext) = ctx.BindJsonAsync<_>()
-
-                let webApp = choose [
-                    route "/" >=> GET >=> Giraffe.Core.htmlView page
-                    route "/" >=> POST >=> bindIt binder event
-                ]
-
-                let configureServices ctx (services : IServiceCollection) =
-                    let settings = JsonSerializerSettings(MissingMemberHandling = MissingMemberHandling.Ignore)
-                    settings.Converters.Add(Json.Converters.CheckboxConverter())
-                    services.AddSingleton<Json.ISerializer>(NewtonsoftJson.Serializer(settings)) |> ignore
-                    ()
-
-                use! webhost = Server.createGiraffeServer configureServices webApp
-                use browser = functions.start canopy.types.Chrome
-                browseTo webhost browser
-                functions.sleep 1
-                functions.click "#submit" browser
-                let! postedData = event.Publish |> Async.AwaitEvent
-
-                Expect.equal postedData myVM ""
-            }
-
-            testCaseAsync "simple nested" <| async {
-                let myVM = {Name = "James Kirk";  Settings = { Theme = "Dark"; Timezone = "Space"; Foo = { Foo = "Bar"}}}
-                let form = editFor myVM "myForm" defaultRenderConfig
-                let page = page form
-                let event = Event<_>()
-                let binder (ctx : HttpContext) = ctx.BindJsonAsync<_>()
-
-                let webApp = choose [
-                    route "/" >=> GET >=> Giraffe.Core.htmlView page
-                    route "/" >=> POST >=> bindIt binder event
-                ]
-
-                let configureServices ctx (services : IServiceCollection) =
-                    let settings = JsonSerializerSettings(MissingMemberHandling = MissingMemberHandling.Ignore)
-                    settings.Converters.Add(Json.Converters.CheckboxConverter())
-                    services.AddSingleton<Json.ISerializer>(NewtonsoftJson.Serializer(settings)) |> ignore
-                    ()
-
-                use! webhost = Server.createGiraffeServer configureServices webApp
-                use browser = functions.start canopy.types.Chrome
-                browseTo webhost browser
-                functions.sleep 1
-                functions.click "#submit" browser
-                let! postedData = event.Publish |> Async.AwaitEvent
-
-                Expect.equal postedData myVM ""
-            }
-
-
-            testCaseAsync "simple list" <| async {
-                let myVM = {Name = "James Kirk";  LotteryNumbers = ["1";"2";"3"]}
-                let form = editFor myVM "myForm" defaultRenderConfig
-                let page = page form
-                let event = Event<_>()
-                let binder (ctx : HttpContext) = ctx.BindJsonAsync<_>()
-
-                let webApp = choose [
-                    route "/" >=> GET >=> Giraffe.Core.htmlView page
-                    route "/" >=> POST >=> bindIt binder event
-                ]
-
-                let configureServices ctx (services : IServiceCollection) =
-                    let settings = JsonSerializerSettings(MissingMemberHandling = MissingMemberHandling.Ignore)
-                    settings.Converters.Add(Json.Converters.CheckboxConverter())
-                    services.AddSingleton<Json.ISerializer>(NewtonsoftJson.Serializer(settings)) |> ignore
-                    ()
-
-                use! webhost = Server.createGiraffeServer configureServices webApp
-                use browser = functions.start canopy.types.Chrome
-                browseTo webhost browser
-                functions.sleep 1
-                functions.click "#submit" browser
-                let! postedData = event.Publish |> Async.AwaitEvent
-
-                Expect.equal postedData myVM ""
-            }
-
-            testCaseAsync "simple list record" <| async {
-                let myVM = {Name = "James Kirk";  Foos = [{Foo = "Bar"}; {Foo = "Baz"}]}
-                let form = editFor myVM "myForm" defaultRenderConfig
-                let page = page form
-                let event = Event<_>()
-                let binder (ctx : HttpContext) = ctx.BindJsonAsync<_>()
-
-                let webApp = choose [
-                    route "/" >=> GET >=> Giraffe.Core.htmlView page
-                    route "/" >=> POST >=> bindIt binder event
-                ]
-
-                let configureServices ctx (services : IServiceCollection) =
-                    let settings = JsonSerializerSettings(MissingMemberHandling = MissingMemberHandling.Ignore)
-                    settings.Converters.Add(Json.Converters.CheckboxConverter())
-                    services.AddSingleton<Json.ISerializer>(NewtonsoftJson.Serializer(settings)) |> ignore
-                    ()
-
-                use! webhost = Server.createGiraffeServer configureServices webApp
-                use browser = functions.start canopy.types.Chrome
-                browseTo webhost browser
-                functions.sleep 1
-                functions.click "#submit" browser
-                let! postedData = event.Publish |> Async.AwaitEvent
-
-                Expect.equal postedData myVM ""
-            }
+            roundTripTestCase "bool" {Enabled = true} boolAsserts
+            roundTripTestCase "simple nested" {Name = "James Kirk";  Settings = { Theme = "Dark"; Timezone = "Space"; Foo = { Foo = "Bar"}}} noMoreAsserts
+            roundTripTestCase "simple list" {Name = "James Kirk";  LotteryNumbers = ["1";"2";"3"]} noMoreAsserts
+            roundTripTestCase "simple list record" {Name = "James Kirk";  Foos = [{Foo = "Bar"}; {Foo = "Baz"}]} noMoreAsserts
         ]
+
