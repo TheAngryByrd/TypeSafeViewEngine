@@ -1,6 +1,67 @@
 # TypeSafeViewEngine
 
-[Enter useful description for TypeSafeViewEngine]
+## What?
+
+This is a library to help generate correct input forms for model binding. Currently only [JSON binding](https://github.com/giraffe-fsharp/Giraffe/blob/master/DOCUMENTATION.md#binding-json) is supported, with help from [jquery.serializeJSON](https://github.com/marioizquierdo/jquery.serializeJSON).
+
+## Why?
+
+When creating html forms, to make [Model Binding](https://docs.microsoft.com/en-us/aspnet/core/mvc/models/model-binding?view=aspnetcore-5.0) work, the [html attribute](https://developer.mozilla.org/en-US/docs/Web/HTML/Attributes) `name` must be set properly. However, since most html DSLs use a string, it's easy for the name to drift inadvertently.
+
+Given a type:
+
+```fsharp
+type Car = {
+    Make : string
+}
+```
+
+and a corresponding html input:
+
+Giraffe DSL:
+
+```fsharp
+input [_name "Make"]
+```
+
+Html output:
+
+```html
+<input name="Make"/>
+```
+
+Now someone could do one of two things, either change the field name `Car` type or the name attribute for the html input. This will cause model binding to stop working. This _should_ get caught in testing but it's possible it may not. 
+
+This simple example may not be compelling because it's so simple, so let's dive into a much more complicated viewmodel.
+
+```fsharp
+type Address = {
+    Street : string
+    Street2: string
+    City : string
+    Country: string
+    Zip : string
+}
+
+type Settings = {
+    Theme : string
+    Timezone : string
+    LuckyNumbers : int list
+}
+
+type Person = {
+    Id : Guid
+    Name : string
+    BirthDate : DateTime
+    GithubProjectsAbandoned : int
+    Addresses : Address list
+    Settings : Settings
+}
+```
+
+## Maintainers
+
+* [TheAngryByrd](https://github.com/TheAngryByrd/)
 
 ---
 
