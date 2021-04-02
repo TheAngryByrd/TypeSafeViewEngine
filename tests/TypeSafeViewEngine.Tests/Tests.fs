@@ -79,12 +79,12 @@ module Tests =
     [<CLIMutableAttribute>]
     type FormStateHidden4 = {
         Name : string
-        FavoriteRestaurant : Address
         // name = "FavoriteRestaurant[Street]"
-        Nicknames : string list
+        FavoriteRestaurant : Address
         // name = "Nicknames[0]"
-        Addesses : Address list
+        Nicknames : string list
         // "Addesses[0][Street]"
+        Addesses : Address list
     }
     open Expecto
     open TypeSafeViewEngine
@@ -93,10 +93,22 @@ module Tests =
     [<Tests>]
     let namePathGenerationTests =
         testList "NamePath Generation" [
-            testCase "foo" <| fun () ->
-                let expected = "Addesses\[\d\]\[Street\]"
-                let (Regex path) = Paths.Path.Make((fun (form : FormStateHidden4) -> form.Addesses |> Seq.map(fun a -> a.Street)))
-                Expect.equal path expected ""
+            testList "Regex" [
+                testCase "Nested Array Record" <| fun () ->
+                    let expected = Regex "Addesses\[\d\]\[Street\]"
+                    let actual = Paths.Path.MakeRegex((fun (form : FormStateHidden4) -> form.Addesses |> Seq.map(fun a -> a.Street)))
+                    Expect.equal actual expected ""
+                testCase "Specific Field in Nested Array Record" <| fun () ->
+                    let expected = Regex "Addesses\[0\]\[Street\]"
+                    let actual = Paths.Path.MakeRegex((fun (form : FormStateHidden4) -> form.Addesses.[0].Street))
+                    Expect.equal actual expected ""
+            ]
+            testList "NamePath" [
+                testCase "Specific Field in Nested Array Record" <| fun () ->
+                    let expected = "Addesses[2][Street]"
+                    let actual = Paths.Path.MakeNamePath((fun (form : FormStateHidden4) -> form.Addesses.[2].Street))
+                    Expect.equal actual expected ""
+            ]
         ]
 
     [<Tests>]
@@ -111,8 +123,8 @@ module Tests =
 
             testCase "custom input" <| fun _ ->
                 let viewModel = {Name = "James Kirk"}
-                let pattern = Regex (nameof(viewModel.Name))
-                let renderConfig = defaultRenderConfig.WithCustomRender pattern (fun value namePath name -> p [] [value |> unbox |> str])
+                let pattern = Paths.Path.MakeRegex(fun (vm : FormStateHidden3) -> vm.Name)
+                let renderConfig = defaultRenderConfig.WithCustomRender(pattern, (fun value namePath name -> p [] [value |> unbox |> str]))
 
                 let xmlNode = editFor viewModel "myForm" renderConfig
                 let expected = """<div><p>James Kirk</p></div>"""
@@ -146,10 +158,10 @@ module Tests =
 
             testCase "custom list record" <| fun _ ->
                 let viewModel = {Name = "James Kirk";  Foos = [{Foo = "Bar"}; {Foo = "Baz"}]}
-                let path = Paths.Path.Make(fun (vm : FormListNestedRecord) -> vm.Foos |> Seq.map(fun f -> f.Foo))
+                let path = (<@ fun (vm : FormListNestedRecord) -> vm.Foos |> Seq.map(fun f -> f.Foo) @>)
                 let hidden value namePath fieldName =
                     input [_type "hidden"; _name namePath ; _value (unbox value)]
-                let renderConfig = defaultRenderConfig.WithCustomRender path hidden
+                let renderConfig = defaultRenderConfig.WithCustomRender(path,hidden)
                 let xmlNode = editFor viewModel "myForm" renderConfig
                 let expected = """<div><div><label for="Name">Name</label><input name="Name" type="text" value="James Kirk"></div><div><div><input type="hidden" name="Foos[0][Foo]" value="Bar"></div><div><input type="hidden" name="Foos[1][Foo]" value="Baz"></div></div></div>"""
                 let actual = RenderView.AsString.htmlNode xmlNode
@@ -188,7 +200,6 @@ module Tests =
                     bodyForm
                     input [_id submitId ;_type "submit"; _value "Submit"; ]
                 ]
-                // script [_type "application/javascript"; _src "https://cdn.jsdelivr.net/gh/serbanghita/formToObject.js/dist/formToObject.min.js"] []
 
                 script [_type "application/javascript"; _src "https://code.jquery.com/jquery-3.6.0.slim.min.js"] []
                 script [_type "application/javascript"; _src "https://cdn.jsdelivr.net/gh/marioizquierdo/jquery.serializeJSON/jquery.serializejson.min.js"] []
@@ -196,7 +207,7 @@ module Tests =
             ]
         ]
 
-    let bindAndPublish (binder : HttpContext -> Task<_>) (event : Event<_>) next (ctx : HttpContext) = task {
+    let bindAndPublish (binder : HttpContext -> Task<'a>) (event : Event<'a>) next (ctx : HttpContext) = task {
         try
             let! bindedValue = binder ctx
             //Started in background since event.Trigger seems to hang in conjuction with Async.AwaitEvent
@@ -210,10 +221,10 @@ module Tests =
     let roundTripTestImpl (viewModel : 'a) additionalAsserts = async {
         let form = editFor viewModel "myForm" defaultRenderConfig
         let page = page form
-        let event = Event<_>()
+        let event = Event<'a>()
         // Start awaiting for this event to get published otherwise we may miss it
         let! postedData = event.Publish |> Async.AwaitEvent |> Async.StartChild
-        let binder (ctx : HttpContext) = ctx.BindJsonAsync<_>()
+        let binder (ctx : HttpContext) = ctx.BindJsonAsync<'a>()
 
         let webApp = choose [
             route "/" >=> GET >=> htmlView page
@@ -250,7 +261,8 @@ module Tests =
     let boolAsserts (browser : IWebDriver) (event : Event<FormStateBool>)  = async {
         let expected = {Enabled = false}
         let! postedData = event.Publish |> Async.AwaitEvent |> Async.StartChild
-        functions.click (nameof expected.Enabled |> sprintf "[name='%s']") browser
+        let namePath = Paths.Path.MakeNamePath(fun (vm : FormStateBool) -> vm.Enabled)
+        functions.click ($"[name='{namePath}']") browser
         functions.click submitIdPath browser
 
         let! actual = postedData
