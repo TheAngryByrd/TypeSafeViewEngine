@@ -22,10 +22,19 @@ module Lib =
     type FieldName = string
 
 
+    /// <summary>
+    /// Single Case union for Regexes
+    /// </summary>
     type Regex = Regex of string
     module Regex =
-        let isMatch (Regex pattern) input =
-            RegularExpressions.Regex.IsMatch(input, pattern)
+        /// <summary>
+        /// Passthrough to <see cref="System.RegularExpressions.Regex.IsMatch"/>
+        /// </summary>
+        /// <param name="pattern">The regular expression pattern to match.</param>
+        /// <param name="input">The string to search for a match.</param>
+        /// <returns></returns>
+        let isMatch ((Regex p) as pattern) input =
+            RegularExpressions.Regex.IsMatch(input, p)
 
     module Paths =
         open Microsoft.FSharp.Quotations
@@ -43,6 +52,15 @@ module Lib =
                 -> true
             | _ -> false
 
+        /// <summary>
+        /// Generates a structured <see cref="T:NamePath"/> from the expression.
+        ///
+        /// Examples:
+        /// * `&lt;@ fun (vm : MyModel) -> vm.Name @&gt;`  will generate `Name`
+        /// * `&lt;@ fun (vm : MyModel) -> vm.Addresses[0].Zip @&gt;`  will generate `Addresses[0][Zip]`
+        /// </summary>
+        /// <param name="userExpr">Expression for generating a path</param>
+        /// <returns>A NamePath</returns>
         let namePath userExpr : NamePath =
             let rec innerLoop expr state =
                 match expr with
@@ -52,26 +70,32 @@ module Lib =
                     sprintf "[%s][%s]" (string value) state  |> innerLoop parent
                 |Patterns.PropertyGet(Some parent, propInfo, []) ->
                     sprintf "%s%s" propInfo.Name state  |> innerLoop parent
-                // |Patterns.Call (None, _, expr1::[Patterns.Let (v, expr2, _)]) when v.Name = "mapping"->
-                //     let parentPath = innerLoop expr1 "\[\d\]"
-                //     let childPath = innerLoop expr2 ""
-                //     sprintf "%s\[%s\]" parentPath childPath
                 |ExprShape.ShapeVar x ->
                     state
                 |_ ->
                     failwithf "Unsupported expression: %A" expr
             innerLoop userExpr "" |> sprintf "%s"
 
+        /// <summary>
+        ///
+        /// Generates a structured <see cref="T:Regex"/> that is able to match against <see cref="T:NamePath"/>
+        ///
+        /// * `&lt;@ fun (vm : MyModel) -> vm.Name @&gt;`  will generate `Name` which will match the Name field.
+        /// * `&lt;@ fun (vm : MyModel) -> vm.Addresses[0].Zip @&gt;`  will generate `Addresses\[0\]\[Zip\]` which will match the first Zip in the list.
+        /// * `&lt;@ fun (vm : MyModel) -> vm.Addresses |> Seq.map(fun a -> a.Zip)@&gt;`  will generate `Addresses\[\d\]\[Zip\]` which will match any Zip in this list.
+        /// </summary>
+        /// <param name="userExpr">Expression for generating a path</param>
+        /// <returns>Regex matcing NamePaths</returns>
         let namePathRegex userExpr =
             let rec innerLoop expr state =
                 match expr with
                 |Patterns.Lambda(_, body) ->
                     innerLoop body state
                 |Patterns.PropertyGet(Some parent, propInfo, [Patterns.Value (value, ty)]) when isNumber ty ->
-
                     sprintf "\[%s\]\[%s\]" (string value) state  |> innerLoop parent
                 |Patterns.PropertyGet(Some parent, propInfo, []) ->
                     sprintf "%s%s" propInfo.Name state  |> innerLoop parent
+                // This part generates the \d for matching any digit
                 |Patterns.Call (None, _, expr1::[Patterns.Let (v, expr2, _)]) when v.Name = "mapping"->
                     let parentPath = innerLoop expr1 "\[\d\]"
                     let childPath = innerLoop expr2 ""
@@ -83,10 +107,21 @@ module Lib =
             innerLoop userExpr "" |> sprintf "%s" |> Regex
 
         type Path =
+            /// <summary>
+            /// A helper for <see cref="namePath"/>
+            /// </summary>
+            /// <param name="f"></param>
+            /// <returns></returns>
             static member MakeNamePath([<ReflectedDefinition(true)>] f:Expr<'T -> 'R>) =
                 match f with
                 |Patterns.WithValue(f, _, expr) -> namePath expr
                 | _ -> namePath f
+
+            /// <summary>
+            /// A helper for <see cref="namePathRegex"/>
+            /// </summary>
+            /// <param name="f"></param>
+            /// <returns></returns>
             static member MakeRegex([<ReflectedDefinition(true)>] f:Expr<'T -> 'R>) =
                 match f with
                 |Patterns.WithValue(f, _, expr) -> namePathRegex expr
@@ -99,6 +134,9 @@ module Lib =
         abstract CanRender : 't -> string -> bool
         abstract Render : 't -> string -> XmlNode
 
+    /// <summary>
+    /// Use this to configure the rendering the html for particular types of a ViewModel.
+    /// </summary>
     type RenderConfig = {
         BoolType : bool -> NamePath -> FieldName -> XmlNode
         StringType : string -> NamePath -> FieldName -> XmlNode
@@ -112,8 +150,20 @@ module Lib =
     }
 
         with
+            /// <summary>
+            /// Allows injecting custom rendering for a given <see cref="T:Regex"/> that matches a <see cref="T:NamePath"/>.
+            /// </summary>
+            /// <param name="pattern">The regex to match a given <see cref="T:NamePath"/>.</param>
+            /// <param name="renderer">The function the will return custom html. </param>
+            /// <returns></returns>
             member x.WithCustomRender(pattern,renderer) =
                 { x with CustomField = x.CustomField |> Map.add pattern renderer }
+            /// <summary>
+            /// Allows injecting custom rendering for a given <see cref="T:Regex"/> that matches a <see cref="T:NamePath"/>.
+            /// </summary>
+            /// <param name="expr">The expression for matching against a <see cref="T:NamePath"/>. See <see cref="namePathRegex"/> for examples. </param>
+            /// <param name="renderer">The function the will return custom html. </param>
+            /// <returns></returns>
             member x.WithCustomRender(expr : Quotations.Expr<'T -> 'R>,renderer) =
                 x.WithCustomRender(Paths.namePathRegex expr, renderer)
 
@@ -128,34 +178,45 @@ module Lib =
                 member __.Visit (shape : ShapeMember<'declType, 'field>) =
                         fun declTypeInstance namePath name -> editFor'<'field>(shape.Get declTypeInstance) namePath name config (depth + 1)
             }
+
         let fieldConfigs = config.CustomField |> Seq.map Operators.(|KeyValue|)
         match fieldConfigs |> Seq.tryFind(fun (pattern, _) -> Regex.isMatch pattern namePath) |> Option.map snd   with
         | Some renderer -> renderer value namePath fieldName
         | None ->
-
             match shapeof<'t> with
             | Shape.Bool ->
                 config.BoolType (unbox value) namePath fieldName
-            | Shape.Int16
+            // | Shape.Int16
             | Shape.Int32
-            | Shape.Int64
-            | Shape.UInt16
-            | Shape.UInt32
-            | Shape.UInt64
-            | Shape.Byte
-            | Shape.SByte ->
-                config.IntType (string value) namePath fieldName
-            | Shape.Single
-            | Shape.Double
-            | Shape.Decimal ->
-                config.DoubleType (string value) namePath fieldName
+            // | Shape.Int64
+            // | Shape.UInt16
+            // | Shape.UInt32
+            // | Shape.UInt64
+            // | Shape.Byte
+            // | Shape.SByte
+                -> config.IntType (string value) namePath fieldName
+            // | Shape.Single
+            // | Shape.Double
+            // | Shape.Decimal ->
+            //     config.DoubleType (string value) namePath fieldName
             | Shape.String ->
                 config.StringType (unbox value) namePath fieldName
-            | Shape.Guid ->
-                config.GuidType (unbox value) namePath fieldName
-              // to make a record, we generate setters for the fields of the record and then run them against an empty record instance
-            | Shape.FSharpRecord (:? ShapeFSharpRecord<'t> as shape) ->
-                let fields = shape.Fields |> Array.map (fun f -> f.Label, inputFor f value)
+            // | Shape.DateTime ->
+            //     config.DateTimeType (unbox value) namePath fieldName
+            // | Shape.DateTimeOffset ->
+            //     config.DateTimeOffsetType (unbox value) namePath fieldName
+            // | Shape.Guid ->
+            //     config.GuidType (unbox value) namePath fieldName
+            | Shape.Enumerable (e)  ->
+                e.Element.Accept { new ITypeVisitor<XmlNode> with
+                    member _.Visit<'t> () =
+                        let nodes = (unbox value) |> List.mapi (fun i v ->
+                            let namePath = $"{namePath}[{i}]"
+                            editFor'<'t> v namePath fieldName config (depth + 1))
+                        div [] nodes
+                    }
+            | Shape.CliMutable (:? ShapeCliMutable<'t> as shape) ->
+                let fields = shape.Properties |> Array.map (fun f -> f.Label, inputFor f value)
                 [
                     for name, htmlFunc in fields do
                         let namePath =
@@ -167,17 +228,17 @@ module Lib =
                         htmlFunc namePath name
                 ]
                 |> config.WholeForm
-            | Shape.Enumerable (e)  ->
-                e.Element.Accept { new ITypeVisitor<XmlNode> with
-                    member _.Visit<'t> () =
-                        let nodes = (unbox value) |> List.mapi (fun i v ->
-                            let namePath = $"{namePath}[{i}]"
-                            editFor'<'t> v namePath fieldName config (depth + 1))
-                        div [] nodes
-                    }
+
 
             | unknownShape  -> failwithf "unhandled shape %A" unknownShape
 
+    /// <summary>
+    /// Generates html input fields based on the structure given in `value`.  Passing a ViewModel (that conforms to CLIMutable) will generate a whole input form.
+    /// </summary>
+    /// <param name="value">The object to generate an input form for.</param>
+    /// <param name="fieldName">The name of the form.</param>
+    /// <param name="config">The RenderConfig that allow for customizing of output.</param>
+    /// <returns></returns>
     let editFor<'t> (value: 't) (fieldName: FieldName) (config : RenderConfig) = editFor'<'t> value "" fieldName config 0
 
 
