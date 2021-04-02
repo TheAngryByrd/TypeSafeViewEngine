@@ -271,16 +271,17 @@ module Tests =
         Expect.equal actual expected ""
     }
 
-    let updateElement predicate f st =
-        st |> List.mapi (fun i v -> if predicate i v  then f v else v)
+    let updateElement predicate updateFun items =
+        items |> List.mapi (fun index item -> if predicate index item  then updateFun item else item)
 
 
     let simpleListRecordAsserts (vm : FormListNestedRecord) (browser : IWebDriver) (event : Event<_>)  = async {
+        let indexOfItemToChange = 1
         let! postedData = event.Publish |> Async.AwaitEvent |> Async.StartChild
         let newFooValue = "Spock"
-        let foos = vm.Foos |> updateElement (fun i _ -> i = 1) (fun foo -> {foo with Foo = newFooValue})
+        let foos = vm.Foos |> updateElement (fun i _ -> i = indexOfItemToChange) (fun foo -> {foo with Foo = newFooValue})
         let expected = {vm with Foos = foos}
-        let namePath = Paths.Path.MakeNamePath(fun (vm : FormListNestedRecord) -> vm.Foos.[1].Foo)
+        let namePath = Paths.Path.MakeNamePath(fun (vm : FormListNestedRecord) -> vm.Foos.[indexOfItemToChange].Foo)
         functions.write (``$name`` namePath) newFooValue browser
         functions.click submitIdPath browser
         let! actual = postedData
