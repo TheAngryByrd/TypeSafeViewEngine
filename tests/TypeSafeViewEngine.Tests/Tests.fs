@@ -245,7 +245,7 @@ module Tests =
 
         Expect.equal actual viewModel ""
 
-        do! additionalAsserts browser event
+        do! additionalAsserts viewModel browser event
     }
 
 
@@ -256,15 +256,33 @@ module Tests =
     let proundTripTestCase name (viewModel : 'a) additionalAsserts =
         ptestCaseAsync name <| roundTripTestImpl viewModel additionalAsserts
 
-    let noMoreAsserts _ _ = async.Zero ()
+    let noMoreAsserts _ _ _ = async.Zero ()
 
-    let boolAsserts (browser : IWebDriver) (event : Event<FormStateBool>)  = async {
-        let expected = {Enabled = false}
+
+    let ``$name`` (namePath : NamePath) =  $"[name='{namePath}']"
+
+    let boolAsserts (vm : FormStateBool) (browser : IWebDriver) (event : Event<_>)  = async {
+        let expected = {vm with Enabled = false}
         let! postedData = event.Publish |> Async.AwaitEvent |> Async.StartChild
         let namePath = Paths.Path.MakeNamePath(fun (vm : FormStateBool) -> vm.Enabled)
-        functions.click ($"[name='{namePath}']") browser
+        functions.uncheck (``$name`` namePath) browser
         functions.click submitIdPath browser
+        let! actual = postedData
+        Expect.equal actual expected ""
+    }
 
+    let updateElement predicate f st =
+        st |> List.mapi (fun i v -> if predicate i v  then f v else v)
+
+
+    let simpleListRecordAsserts (vm : FormListNestedRecord) (browser : IWebDriver) (event : Event<_>)  = async {
+        let! postedData = event.Publish |> Async.AwaitEvent |> Async.StartChild
+        let newFooValue = "Spock"
+        let foos = vm.Foos |> updateElement (fun i _ -> i = 1) (fun foo -> {foo with Foo = newFooValue})
+        let expected = {vm with Foos = foos}
+        let namePath = Paths.Path.MakeNamePath(fun (vm : FormListNestedRecord) -> vm.Foos.[1].Foo)
+        functions.write (``$name`` namePath) newFooValue browser
+        functions.click submitIdPath browser
         let! actual = postedData
         Expect.equal actual expected ""
     }
@@ -276,6 +294,6 @@ module Tests =
             roundTripTestCase "bool" {Enabled = true} boolAsserts
             roundTripTestCase "simple nested" {Name = "James Kirk";  Settings = { Theme = "Dark"; Timezone = "Space"; Foo = { Foo = "Bar"}}} noMoreAsserts
             roundTripTestCase "simple list" {Name = "James Kirk";  LotteryNumbers = ["1";"2";"3"]} noMoreAsserts
-            roundTripTestCase "simple list record" {Name = "James Kirk";  Foos = [{Foo = "Bar"}; {Foo = "Baz"}]} noMoreAsserts
+            roundTripTestCase "simple list record" {Name = "James Kirk";  Foos = [{Foo = "Bar"}; {Foo = "Baz"}]} simpleListRecordAsserts
         ]
 
