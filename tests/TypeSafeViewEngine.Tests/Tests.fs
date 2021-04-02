@@ -89,6 +89,16 @@ module Tests =
     open Expecto
     open TypeSafeViewEngine
     open Giraffe.ViewEngine
+
+    [<Tests>]
+    let namePathGenerationTests =
+        testList "NamePath Generation" [
+            testCase "foo" <| fun () ->
+                let expected = "Addesses\[\d\]\[Street\]"
+                let (Regex path) = Paths.Path.Make((fun (form : FormStateHidden4) -> form.Addesses |> Seq.map(fun a -> a.Street)))
+                Expect.equal path expected ""
+        ]
+
     [<Tests>]
     let unitTests =
         testList "Lib" [
@@ -101,7 +111,8 @@ module Tests =
 
             testCase "custom input" <| fun _ ->
                 let viewModel = {Name = "James Kirk"}
-                let renderConfig = defaultRenderConfig.WithCustomRender (nameof(viewModel.Name)) (fun value namePath name -> p [] [value |> unbox |> str])
+                let pattern = Regex (nameof(viewModel.Name))
+                let renderConfig = defaultRenderConfig.WithCustomRender pattern (fun value namePath name -> p [] [value |> unbox |> str])
 
                 let xmlNode = editFor viewModel "myForm" renderConfig
                 let expected = """<div><p>James Kirk</p></div>"""
@@ -129,6 +140,18 @@ module Tests =
 
                 let xmlNode = editFor viewModel "myForm" defaultRenderConfig
                 let expected = """<div><div><label for="Name">Name</label><input name="Name" type="text" value="James Kirk"></div><div><div><div><label for="Foos[0][Foo]">Foo</label><input name="Foos[0][Foo]" type="text" value="Bar"></div></div><div><div><label for="Foos[1][Foo]">Foo</label><input name="Foos[1][Foo]" type="text" value="Baz"></div></div></div></div>"""
+                let actual = RenderView.AsString.htmlNode xmlNode
+                Expect.equal actual expected ""
+
+
+            testCase "custom list record" <| fun _ ->
+                let viewModel = {Name = "James Kirk";  Foos = [{Foo = "Bar"}; {Foo = "Baz"}]}
+                let path = Paths.Path.Make(fun (vm : FormListNestedRecord) -> vm.Foos |> Seq.map(fun f -> f.Foo))
+                let hidden value namePath fieldName =
+                    input [_type "hidden"; _name namePath ; _value (unbox value)]
+                let renderConfig = defaultRenderConfig.WithCustomRender path hidden
+                let xmlNode = editFor viewModel "myForm" renderConfig
+                let expected = """<div><div><label for="Name">Name</label><input name="Name" type="text" value="James Kirk"></div><div><div><input type="hidden" name="Foos[0][Foo]" value="Bar"></div><div><input type="hidden" name="Foos[1][Foo]" value="Baz"></div></div></div>"""
                 let actual = RenderView.AsString.htmlNode xmlNode
                 Expect.equal actual expected ""
         ]
@@ -224,14 +247,14 @@ module Tests =
 
     let noMoreAsserts _ _ = async.Zero ()
 
-    let boolAsserts (browser : IWebDriver) (event : Event<FormStateBool>)  =  async {
-        let! postedData = event.Publish |> Async.AwaitEvent |> Async.StartChild
-        functions.click "[name='Enabled']" browser
-        functions.click submitIdPath browser
+    let boolAsserts (browser : IWebDriver) (event : Event<FormStateBool>)  = async {
         let expected = {Enabled = false}
+        let! postedData = event.Publish |> Async.AwaitEvent |> Async.StartChild
+        functions.click (nameof expected.Enabled |> sprintf "[name='%s']") browser
+        functions.click submitIdPath browser
+
         let! actual = postedData
         Expect.equal actual expected ""
-
     }
 
     [<Tests>]

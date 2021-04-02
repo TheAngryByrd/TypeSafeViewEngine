@@ -11,7 +11,38 @@ open TypeShape.Core.SubtypeExtensions
 [<AutoOpen>]
 module Lib =
 
-    // maybe use this isntead of pattern matching?
+    type Regex = Regex of string
+    module Regex =
+        let isMatch (Regex pattern) input =
+            RegularExpressions.Regex.IsMatch(input, pattern)
+    module Paths =
+        open Microsoft.FSharp.Quotations
+
+        let namePathRegex userExpr =
+            let rec innerLoop expr state =
+                match expr with
+                |Patterns.Lambda(_, body) ->
+                    innerLoop body state
+                |Patterns.PropertyGet(Some parent, propInfo, []) ->
+                    sprintf "%s%s" propInfo.Name state  |> innerLoop parent
+                |Patterns.Call (None, _, expr1::[Patterns.Let (v, expr2, _)]) when v.Name = "mapping"->
+                    let parentPath = innerLoop expr1 "\[\d\]"
+                    let childPath = innerLoop expr2 ""
+                    sprintf "%s\[%s\]" parentPath childPath
+                |ExprShape.ShapeVar x ->
+                    state
+                |_ ->
+                    failwithf "Unsupported expression: %A" expr
+            innerLoop userExpr "" |> sprintf "%s" |> Regex
+
+        type Path =
+            static member Make([<ReflectedDefinition(true)>] f:Expr<'T -> 'R>) =
+                match f with
+                |Patterns.WithValue(f, _, expr) ->
+                    namePathRegex expr
+                | _ -> failwith "Unexpected argument"
+
+    // maybe use this instead of pattern matching?
     type IRenderer =
         abstract CanRender : 't -> string -> bool
         abstract Render : 't -> string -> XmlNode
@@ -30,7 +61,7 @@ module Lib =
         BoolType : bool -> NamePath -> FieldName -> XmlNode
         StringType : string -> NamePath -> FieldName -> XmlNode
         HiddenType : string -> NamePath -> FieldName -> XmlNode
-        CustomField : Map<string, obj -> NamePath -> FieldName -> XmlNode>
+        CustomField : Map<Regex, obj -> NamePath -> FieldName -> XmlNode>
         WholeForm : XmlNode list -> XmlNode
     }
 
@@ -51,7 +82,8 @@ module Lib =
                 member __.Visit (shape : ShapeMember<'declType, 'field>) =
                         fun declTypeInstance namePath name -> editFor'<'field>(shape.Get declTypeInstance) namePath name config (depth + 1)
             }
-        match config.CustomField |> Map.tryFind fieldName with
+        let fieldConfigs = config.CustomField |> Seq.map Operators.(|KeyValue|)
+        match fieldConfigs |> Seq.tryFind(fun (pattern, _) -> Regex.isMatch pattern namePath) |> Option.map snd   with
         | Some renderer -> renderer value namePath fieldName
         | None ->
 
